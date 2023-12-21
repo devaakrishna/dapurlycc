@@ -3,15 +3,37 @@ import math
 import pandas as pd
 import tensorflow as tf
 import numpy as np
-import fastapi
-
+from sqlalchemy import create_engine, text
 
 # version of model
 __version__ = "2.0.0"
 # change the url
-data_recipe = pd.read_excel('/path/in/container/all-recipe-cleaned.xlsx')
-base_ratings = pd.read_excel('/path/in/container/small_ratings.xlsx')  
-food_price = pd.read_excel('/path/in/container/harga-bahan-cleaned.xlsx')
+def get_data_template(table_name):
+    db_user = 'root'
+    db_password = '12345'
+    db_port = 3306
+    db_host = "34.128.103.197"
+    db_name = 'dapurly-db'
+
+    # Create the connection string
+    connection_string =  f'mysql+pymysql://{db_user}:{db_password}@{db_host}:{db_port}/{db_name}'
+
+    # Create the engine
+    engine = create_engine(connection_string)
+
+    # Write your SQL query
+    sql_query = text(f'SELECT * FROM `{table_name}`')
+
+    # Use pandas.read_sql() to read the query results into a DataFrame
+    # df = pd.read_sql_query(sql_query, con = engine)
+    with engine.connect().execution_options(stream_results=True) as connection:
+        result = connection.execute(sql_query)
+        df = pd.DataFrame(result.fetchall(), columns=result.keys())
+    return df
+# change the url        
+data_recipe = get_data_template(table_name="all-recipe")
+base_ratings = get_data_template(table_name='user-ratings')  
+food_price = get_data_template(table_name='harga_clean')  
  
     
 # load the model  
@@ -24,9 +46,9 @@ def load_model():
 # load thee weight, X and bias
 def load_weights_X_bias():
     # change the url
-    W = tf.Variable(pd.read_excel("/path/in/container/small-W-final.xlsx", index_col=0)) 
-    X  = tf.Variable(pd.read_excel("/path/in/container/small-X-final.xlsx", index_col=0))
-    bias  = tf.Variable(pd.read_excel("/path/in/container/small-B-final.xlsx", index_col=0)) 
+    W = tf.Variable(get_data_template(table_name='small-W-final')) 
+    X  = tf.Variable(get_data_template(table_name='small-X-final'))
+    bias  = tf.Variable(get_data_template(table_name='small-B-final')) 
     return W,X, bias
 
 # this function was created to get new user's ratings
@@ -47,7 +69,7 @@ def based_ratings(based_ratings):
     Y = []
     temp = []
     for i in range(len(based_ratings)): 
-        for j in range(1, 201): 
+        for j in range(1, 200): 
             temp.append(based_ratings[f'user{j}'].iloc[i])
         Y.append(temp)
         temp = []
@@ -58,12 +80,13 @@ def concat_based_new_user_ratings(user_country_references_param):
     # this function actually have user_country_references, CC team you can add the parameter with the configuration 
     get_based_ratings = based_ratings(base_ratings)
     new_user_ratings, new_user_ratings_index = get_new_user_ratings(recipe_dataset = data_recipe, base_ratings = base_ratings, user_country_references =  user_country_references_param)
-    return np.c_[new_user_ratings, get_based_ratings], new_user_ratings_index
+    Y_concat = np.array(np.c_[new_user_ratings, get_based_ratings])
+    return Y_concat
+   
 
-# retrain the model to make sure the model can learn from new user's ratings
 def retrain(country_refrences):
     user_weight,recipe_x, bias = load_weights_X_bias() 
-    Y, new_user_ratings_index = concat_based_new_user_ratings(user_country_references_param=country_refrences)
+    Y = concat_based_new_user_ratings(user_country_references_param=country_refrences)
     model = load_model()
     model.compile(optimizer=tf.keras.optimizers.Adam(), loss='mean_squared_error', metrics = 'mse')
     model.fit(x = np.matmul(recipe_x.numpy(), np.transpose(user_weight)) + bias.numpy(), y = Y, epochs=2)
@@ -89,7 +112,6 @@ def final_recomendation(prediction, bahan_yang_disukai_param, bahan_yang_tidak_d
         j = prediction[i]
         all_recomendation.append(int(j))
 
-   
     recipe_filter_by_bahan = []
     for i in range(len(all_recomendation)):
         for j in range(len(bahan_yang_disukai)): 
@@ -157,8 +179,7 @@ def final_recomendation(prediction, bahan_yang_disukai_param, bahan_yang_tidak_d
             if temp not in final_recomend:
                 final_recomend.append(temp)
     return final_recomend
-
 def get_recommender(bahan_yang_disukai, bahan_yang_tidak_disukai , pantangan_makan, budget, jumlah_makan_sehari, jumlah_dewasa, jumlah_anak, country_refrences_param): 
-    pred = retrain(country_refrences=country_refrences_param)
+    pred =  retrain(country_refrences = country_refrences_param)
     all = final_recomendation(prediction=pred, bahan_yang_disukai_param= bahan_yang_disukai, bahan_yang_tidak_disukai_param=bahan_yang_tidak_disukai, pantangan_makan_param= pantangan_makan, budget_param= budget, jumlah_makan_sehari_param=jumlah_makan_sehari, jumlah_anak_param = jumlah_anak,jumlah_dewasa_param=jumlah_dewasa)
-    return tuple(all)
+    return all
